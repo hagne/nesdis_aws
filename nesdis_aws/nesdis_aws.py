@@ -2,15 +2,35 @@
 import pathlib as _pl
 import pandas as _pd
 import s3fs as _s3fs
-import urllib as _urllib
-import html2text as _html2text
+# import urllib as _urllib
+# import html2text as _html2text
 import psutil as _psutil
+import numpy as _np
 
-def print_readme(self):
+def readme():
     url = 'https://docs.opendata.aws/noaa-goes16/cics-readme.html'
-    html = _urllib.request.urlopen(url).read().decode("utf-8") 
-    out = _html2text.html2text(html)
-    print(out)
+    # html = _urllib.request.urlopen(url).read().decode("utf-8") 
+    # out = _html2text.html2text(html)
+    # print(out)
+    print(f'follow link for readme: {url}')
+
+
+def available_products():
+    aws = _s3fs.S3FileSystem(anon=True)
+
+    df = _pd.DataFrame()
+    for satellite in [16,17]:
+        # satellite = 16#16 (east) or 17(west)
+        base_folder = _pl.Path(f'noaa-goes{satellite}')
+        products_available = aws.glob(base_folder.joinpath('*').as_posix())
+        df[satellite] = [p.split('/')[-1] for p in products_available if '.pdf' not in p]
+
+    if _np.all(df[16] == df[17]):
+        ins = ''
+    else:
+        ins = ' !!_NOT_!!'
+    print(f'goes 16 and 17 products are{ins} identical')
+    return df
 
 class AwsQuery(object):
     def __init__(self,
@@ -61,8 +81,9 @@ class AwsQuery(object):
         """
         self.satellite = satellite
         self.path2folder_aws = _pl.Path(f'noaa-goes{self.satellite}')
-        self.product = product
+        
         self.scan_sector = scan_sector 
+        self.product = product
         
         self.start = _pd.to_datetime(start)
         self.end =  _pd.to_datetime(end)
@@ -73,6 +94,17 @@ class AwsQuery(object):
         self.aws.clear_instance_cache() # strange things happen if the is not the only query one is doing during a session
         # properties
         self._workplan = None
+        
+    @property
+    def product(self):
+        return self._product
+    
+    @product.setter
+    def product(self, value):
+        if value[-1] == self.scan_sector:
+            value = value[:-1]
+        self._product = value
+        return
         
     def info_on_current_query(self):
         du = self.estimate_disk_usage()
@@ -157,9 +189,31 @@ class AwsQuery(object):
             self._workplan = workplan
         return self._workplan       
     
+    
     @workplan.setter
     def workplan(self, new_workplan):
         self._workplan = new_workplan
+    
+    @property
+    def product_available_since(self):
+        product_folder = self.path2folder_aws.joinpath(f'{self.product}{self.scan_sector}')
+        years = self.aws.glob(product_folder.joinpath('*').as_posix())
+        years.sort()
+        
+        is2000 = True
+        while is2000:
+            yearfolder = years.pop(0)
+            firstyear = yearfolder.split('/')[-1]
+            # print(firstyear)
+            if firstyear != '2000':
+                is2000 = False
+                
+        yearfolder = _pl.Path(yearfolder)
+        days = self.aws.glob(yearfolder.joinpath('*').as_posix())
+        days.sort()
+        firstday = int(days[0].split('/')[-1])
+        firstday_ts = _pd.to_datetime(firstyear) + _pd.to_timedelta(firstday, "D")
+        return firstday_ts
         
     def download(self, test = False, overwrite = False, error_if_low_disk_space = True):
         if error_if_low_disk_space:
