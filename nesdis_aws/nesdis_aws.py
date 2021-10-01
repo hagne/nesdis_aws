@@ -107,12 +107,16 @@ class AwsQuery(object):
         return
         
     def info_on_current_query(self):
-        du = self.estimate_disk_usage()
-        disk_space_needed = du['disk_space_needed'] * 1e-6
-        disk_space_free_after_download = du['disk_space_free_after_download']
-        info = (f'no of files: {self.workplan.shape[0]}\n'
-                f'estimated disk usage: {disk_space_needed:0.0f} mb\n'
-                f'remaining disk space after download: {disk_space_free_after_download:0.0f} %\n')
+        nooffiles = self.workplan.shape[0]
+        if nooffiles == 0:
+            info = 'no file found'
+        else:
+            du = self.estimate_disk_usage()
+            disk_space_needed = du['disk_space_needed'] * 1e-6
+            disk_space_free_after_download = du['disk_space_free_after_download']
+            info = (f'no of files: {nooffiles}\n'
+                    f'estimated disk usage: {disk_space_needed:0.0f} mb\n'
+                    f'remaining disk space after download: {disk_space_free_after_download:0.0f} %\n')
         return info
     
     # def print_readme(self):
@@ -131,7 +135,7 @@ class AwsQuery(object):
         
         # get remaining disk space after download
         du = _psutil.disk_usage(self.path2folder_local)
-        disk_space_free_after_download = 100* (du.used + disk_space_needed)/du.total 
+        disk_space_free_after_download = 100 - (100* (du.used + disk_space_needed)/du.total )
         out = {}
         out['disk_space_needed'] = disk_space_needed
         out['disk_space_free_after_download'] = disk_space_free_after_download
@@ -140,27 +144,40 @@ class AwsQuery(object):
     @property
     def workplan(self):
         if isinstance(self._workplan, type(None)):
-            # get the julian days (thus folders on aws) needed
-            start_julian = int(_pd.to_datetime(self.start.date()).to_julian_date() - _pd.to_datetime(f'{self.start.year:04d}-01-01').to_julian_date()) + 1 
-            end_julian = int(_pd.to_datetime(self.end.date()).to_julian_date() - _pd.to_datetime(f'{self.end.year:04d}-01-01').to_julian_date()) + 1 
-            days = list(range(start_julian, end_julian+1))
+#             #### bug: problem below is that time ranges that span over multiple years will not work!
+#             # get the julian days (thus folders on aws) needed
+#             start_julian = int(_pd.to_datetime(self.start.date()).to_julian_date() - _pd.to_datetime(f'{self.start.year:04d}-01-01').to_julian_date()) + 1 
+#             end_julian = int(_pd.to_datetime(self.end.date()).to_julian_date() - _pd.to_datetime(f'{self.end.year:04d}-01-01').to_julian_date()) + 1 
+#             days = list(range(start_julian, end_julian+1))
 
-            # get all the files available
-#             base_folder = pl.Path(f'noaa-goes{self.satellite}')
-            base_folder = self.path2folder_aws
-            product_folder = base_folder.joinpath(f'{self.product}{self.scan_sector}')
-            year_folder = product_folder.joinpath(f'{self.start.year}')
+#             # get all the files available
+# #             base_folder = pl.Path(f'noaa-goes{self.satellite}')
+#             base_folder = self.path2folder_aws
+#             product_folder = base_folder.joinpath(f'{self.product}{self.scan_sector}')
+#             files_available = []
+#             year_folder = product_folder.joinpath(f'{self.start.year}')
+#             for day in days:
+#                 day_folder = year_folder.joinpath(f'{day:03d}')
+#                 hours_available = self.aws.glob(day_folder.joinpath('*').as_posix())
+#                 hours_available = [h.split('/')[-1] for h in hours_available]
+
+#                 for hour in hours_available:
+#                     hour_folder = day_folder.joinpath(f'{hour}')
+#                     glob_this = hour_folder.joinpath('*').as_posix()
+#                     last_glob = self.aws.glob(glob_this)
+#                     files_available += last_glob
+
+            # create a dataframe with all hours in the time range
+            df = _pd.DataFrame(index = _pd.date_range(self.start, self.end, freq='h'), columns=['path'])
+            
+            # create the path to the directory of each row above (one per houre)
+            product_folder = self.path2folder_aws.joinpath(f'{self.product}{self.scan_sector}')
+            df['path'] = df.apply(lambda row: product_folder.joinpath(str(row.name.year)).joinpath(f'{row.name.day_of_year:03d}').joinpath(f'{row.name.hour:02d}').joinpath('*'), axis= 1)
+            
+            # get the path to each file in all the folders 
             files_available = []
-            for day in days:
-                day_folder = year_folder.joinpath(f'{day:03d}')
-                hours_available = self.aws.glob(day_folder.joinpath('*').as_posix())
-                hours_available = [h.split('/')[-1] for h in hours_available]
-
-                for hour in hours_available:
-                    hour_folder = day_folder.joinpath(f'{hour}')
-                    glob_this = hour_folder.joinpath('*').as_posix()
-                    last_glob = self.aws.glob(glob_this)
-                    files_available += last_glob
+            for idx,row in df.iterrows():
+                files_available += self.aws.glob(row.path.as_posix())
 
             # Make workplan
 
