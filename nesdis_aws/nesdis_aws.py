@@ -6,6 +6,7 @@ import s3fs as _s3fs
 # import html2text as _html2text
 import psutil as _psutil
 import numpy as _np
+import xarray as _xr
 
 def readme():
     url = 'https://docs.opendata.aws/noaa-goes16/cics-readme.html'
@@ -40,9 +41,12 @@ class AwsQuery(object):
                  scan_sector = 'C',
                  start = '2020-08-08 20:00:00', 
                  end = '2020-08-09 18:00:00',
-                 no_of_days = None,
-                 last_x_days = None, 
-                 max_no_of_files = 100,#10*24*7,
+                 process = None,
+                 keep_files = None,
+                 # check_if_file_exist = True,
+                 # no_of_days = None,
+                 # last_x_days = None, 
+                 # max_no_of_files = 100,#10*24*7,
                 ):
         """
         This will initialize a search on AWS.
@@ -63,16 +67,11 @@ class AwsQuery(object):
             DESCRIPTION. The default is '2020-08-08 20:00:00'.
         end : TYPE, optional
             DESCRIPTION. The default is '2020-08-09 18:00:00'.
-        no_of_days : TYPE, optional
-            DESCRIPTION. The default is None.
-        last_x_days : TYPE, optional
-            DESCRIPTION. The default is None.
-        max_no_of_files : TYPE, optional
-            DESCRIPTION. The default is 100.
-        #10*24*7 : TYPE
-            DESCRIPTION.
-         : TYPE
-            DESCRIPTION.
+        process: dict,
+            todo!!
+        keep_files: bool, optional
+            Default is True unless process is given which changes the default
+            False.
 
         Returns
         -------
@@ -90,6 +89,19 @@ class AwsQuery(object):
         
         self.path2folder_local = _pl.Path(path2folder_local)
         
+        if isinstance(process, dict):
+            self._process = True
+            self._process_concatenate = process['concatenate']
+            self._process_function = process['function']
+            self._process_name_prefix = process['prefix']
+            self._process_path2processed = _pl.Path(process['path2processed'])
+            self._process_path2processed_tmp = self._process_path2processed.joinpath('tmp')
+            self._process_path2processed_tmp.mkdir(exist_ok=True)
+            self.keep_files = False
+            # self.check_if_file_exist = False
+        else:
+            self._process = False
+            
         self.aws = _s3fs.S3FileSystem(anon=True)
         self.aws.clear_instance_cache() # strange things happen if the is not the only query one is doing during a session
         # properties
@@ -109,7 +121,7 @@ class AwsQuery(object):
     def info_on_current_query(self):
         nooffiles = self.workplan.shape[0]
         if nooffiles == 0:
-            info = 'no file found'
+            info = 'no file found or all files already on disk.'
         else:
             du = self.estimate_disk_usage()
             disk_space_needed = du['disk_space_needed'] * 1e-6
@@ -185,9 +197,10 @@ class AwsQuery(object):
             workplan['path2file_local'] = workplan.apply(lambda row: self.path2folder_local.joinpath(row.path2file_aws.name), axis = 1)
 
             # remove if local file exists
-            workplan = workplan[~workplan.apply(lambda row: row.path2file_local.is_file(), axis = 1)]
+            if not self._process:
+                workplan = workplan[~workplan.apply(lambda row: row.path2file_local.is_file(), axis = 1)]
             
-            # get file sizes
+            # get file sizes ... takes to long to do for each file
 #             workplan['file_size_mb'] = workplan.apply(lambda row: self.aws.disk_usage(row.path2file_aws)/1e6, axis = 1)
             
             # get the timestamp
@@ -202,6 +215,14 @@ class AwsQuery(object):
             # truncate ... remember so far we did not consider times in start and end, only the entire days
             workplan = workplan.sort_index()
             workplan = workplan.truncate(self.start, self.end)
+            
+            if self._process:
+                ### add path to processed file names
+                workplan["path2file_local_processed"] = workplan.apply(lambda row: self._process_path2processed.joinpath(f'{self._process_name_prefix}_{row.name.year}{row.name.month:02d}{row.name.day:02d}.nc'), axis = 1)
+                ### remove if file exists 
+                workplan = workplan[~workplan.apply(lambda row: row.path2file_local_processed.is_file(), axis = True)]
+                workplan['path2file_tmp'] = workplan.apply(lambda row: self._process_path2processed_tmp.joinpath(row.name.__str__()), axis = 1)
+                
             
             self._workplan = workplan
         return self._workplan       
@@ -232,12 +253,39 @@ class AwsQuery(object):
         firstday_ts = _pd.to_datetime(firstyear) + _pd.to_timedelta(firstday, "D")
         return firstday_ts
         
-    def download(self, test = False, overwrite = False, error_if_low_disk_space = True):
+    def download(self, test = False, overwrite = False, alternative_workplan = False,
+                 error_if_low_disk_space = True):
+        """
+        
+
+        Parameters
+        ----------
+        test : TYPE, optional
+            DESCRIPTION. The default is False.
+        overwrite : TYPE, optional
+            DESCRIPTION. The default is False.
+        alternative_workplan : pandas.Dataframe, optional
+            This will ignore the instance workplan and use the provided one 
+            instead. The default is False.
+        error_if_low_disk_space : TYPE, optional
+            DESCRIPTION. The default is True.
+
+        Returns
+        -------
+        out : TYPE
+            DESCRIPTION.
+
+        """
+        if isinstance(alternative_workplan, _pd.DataFrame):
+            workplan = alternative_workplan
+        else:
+            workplan = self.workplan
+        
         if error_if_low_disk_space:
             disk_space_free_after_download = self.estimate_disk_usage()['disk_space_free_after_download']
             assert(disk_space_free_after_download<90), f"This download will bring the disk usage above 90% ({disk_space_free_after_download:0.0f}%). Turn off this error by setting error_if_low_disk_space to False."
         
-        for idx, row in self.workplan.iterrows():
+        for idx, row in workplan.iterrows():
             if not overwrite:
                 if row.path2file_local.is_file():
                     continue
@@ -246,4 +294,44 @@ class AwsQuery(object):
             if test:
                 break
         return out
+    
+    
+    def process(self, keep_tmp_files = False):
+    # first grouping is required
+        group = self.workplan.groupby('path2file_local_processed')
+        for p2flp, p2flpgrp in group:
+        #     break
+        ## for each file in group
+        
+            for dt, row in p2flpgrp.iterrows():
+            #     break
+        
+                if not row.path2file_tmp.is_file():
+                    if not row.path2file_local.is_file():
+            #             print('downloading')
+                        ### download
+                        download_output = self.aws.get(row.path2file_aws.as_posix(), row.path2file_local.as_posix())
+                    ### process
+                    try:
+                        self._process_function(row)
+                    except:
+                        print(f'error applying function on one file {row.path2file_local.name}')
+                    ### remove raw file
+                    if not self.keep_files:
+                        row.path2file_local.unlink()
+        
+            # concatinate
+        
+            ds = _xr.open_mfdataset(p2flpgrp.path2file_tmp.iloc[1:])
+        
+            ### save final product
+            ds.to_netcdf(p2flp)
+        
+            # remove all tmp files
+            if not keep_tmp_files:
+                for dt, row in p2flpgrp.iterrows():
+                    try:
+                        row.path2file_tmp.unlink()
+                    except FileNotFoundError:
+                        pass
         
