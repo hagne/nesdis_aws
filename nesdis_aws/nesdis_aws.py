@@ -6,7 +6,7 @@ import s3fs as _s3fs
 # import html2text as _html2text
 import psutil as _psutil
 import numpy as _np
-import xarray as _xr
+# import xarray as _xr
 
 def readme():
     url = 'https://docs.opendata.aws/noaa-goes16/cics-readme.html'
@@ -68,7 +68,12 @@ class AwsQuery(object):
         end : TYPE, optional
             DESCRIPTION. The default is '2020-08-09 18:00:00'.
         process: dict,
-            todo!!
+            This is still in development and might be buggy.
+            Example:
+                dict(concatenate = 'daily',
+                     function = lambda row: some_function(row, *args, **kwargs),
+                     prefix = 'ABI_L2_AOD_processed',
+                     path2processed = '/path2processed/')
         keep_files: bool, optional
             Default is True unless process is given which changes the default
             False.
@@ -91,12 +96,12 @@ class AwsQuery(object):
         
         if isinstance(process, dict):
             self._process = True
-            self._process_concatenate = process['concatenate']
+            # self._process_concatenate = process['concatenate']
             self._process_function = process['function']
             self._process_name_prefix = process['prefix']
             self._process_path2processed = _pl.Path(process['path2processed'])
-            self._process_path2processed_tmp = self._process_path2processed.joinpath('tmp')
-            self._process_path2processed_tmp.mkdir(exist_ok=True)
+            # self._process_path2processed_tmp = self._process_path2processed.joinpath('tmp')
+            # self._process_path2processed_tmp.mkdir(exist_ok=True)
             self.keep_files = False
             # self.check_if_file_exist = False
         else:
@@ -178,7 +183,8 @@ class AwsQuery(object):
 #                     glob_this = hour_folder.joinpath('*').as_posix()
 #                     last_glob = self.aws.glob(glob_this)
 #                     files_available += last_glob
-
+            
+            #### make a data frame to all the available files in the time range
             # create a dataframe with all hours in the time range
             df = _pd.DataFrame(index = _pd.date_range(self.start, self.end, freq='h'), columns=['path'])
             
@@ -191,19 +197,19 @@ class AwsQuery(object):
             for idx,row in df.iterrows():
                 files_available += self.aws.glob(row.path.as_posix())
 
-            # Make workplan
+            #### Make workplan
 
             workplan = _pd.DataFrame([_pl.Path(f) for f in files_available], columns=['path2file_aws'])
             workplan['path2file_local'] = workplan.apply(lambda row: self.path2folder_local.joinpath(row.path2file_aws.name), axis = 1)
 
-            # remove if local file exists
+            #### remove if local file exists
             if not self._process:
                 workplan = workplan[~workplan.apply(lambda row: row.path2file_local.is_file(), axis = 1)]
             
             # get file sizes ... takes to long to do for each file
 #             workplan['file_size_mb'] = workplan.apply(lambda row: self.aws.disk_usage(row.path2file_aws)/1e6, axis = 1)
             
-            # get the timestamp
+            #### get the timestamp
             def row2timestamp(row):
                 sos = row.path2file_aws.name.split('_')[-3]
                 assert(sos[0] == 's'), f'Something needs fixing, this string ({sos}) should start with s.'
@@ -212,16 +218,17 @@ class AwsQuery(object):
 
             workplan.index = workplan.apply(lambda row: row2timestamp(row), axis = 1)
 
-            # truncate ... remember so far we did not consider times in start and end, only the entire days
+            #### truncate ... remember so far we did not consider times in start and end, only the entire days
             workplan = workplan.sort_index()
             workplan = workplan.truncate(self.start, self.end)
             
+            #### processing additions
             if self._process:
                 ### add path to processed file names
-                workplan["path2file_local_processed"] = workplan.apply(lambda row: self._process_path2processed.joinpath(f'{self._process_name_prefix}_{row.name.year}{row.name.month:02d}{row.name.day:02d}.nc'), axis = 1)
+                workplan["path2file_local_processed"] = workplan.apply(lambda row: self._process_path2processed.joinpath(f'{self._process_name_prefix}_{row.name.year}{row.name.month:02d}{row.name.day:02d}_{row.name.hour:02d}{row.name.minute:02d}{row.name.second:02d}.nc'), axis = 1)
                 ### remove if file exists 
                 workplan = workplan[~workplan.apply(lambda row: row.path2file_local_processed.is_file(), axis = True)]
-                workplan['path2file_tmp'] = workplan.apply(lambda row: self._process_path2processed_tmp.joinpath(row.name.__str__()), axis = 1)
+                # workplan['path2file_tmp'] = workplan.apply(lambda row: self._process_path2processed_tmp.joinpath(row.name.__str__()), axis = 1)
                 
             
             self._workplan = workplan
@@ -296,42 +303,44 @@ class AwsQuery(object):
         return out
     
     
-    def process(self, keep_tmp_files = False):
-    # first grouping is required
-        group = self.workplan.groupby('path2file_local_processed')
-        for p2flp, p2flpgrp in group:
+    def process(self):
+    # deprecated first grouping is required
+        # group = self.workplan.groupby('path2file_local_processed')
+        # for p2flp, p2flpgrp in group:
         #     break
         ## for each file in group
         
-            for dt, row in p2flpgrp.iterrows():
-            #     break
+        for dt, row in self.workplan.iterrows():  
+            # if not row.path2file_local_processed.is_file():
+            if not row.path2file_local.is_file():
+    #             print('downloading')
+                #### download
+                # download_output = 
+                self.aws.get(row.path2file_aws.as_posix(), row.path2file_local.as_posix())
+            #### process
+            try:
+                self._process_function(row)
+            except:
+                print(f'error applying function on one file {row.path2file_local.name}. The raw fill will still be removed (unless keep_files is True) to avoid storage issues')
+            #### remove raw file
+            if not self.keep_files:
+                row.path2file_local.unlink()
+    
+        #### todo: concatenate 
+        # if this is actually desired I would think this should be done seperately, not as part of this package
+        # try:
+        #     ds = _xr.open_mfdataset(p2flpgrp.path2file_tmp)
+
+        #     #### save final product
+        #     ds.to_netcdf(p2flp)
         
-                if not row.path2file_tmp.is_file():
-                    if not row.path2file_local.is_file():
-            #             print('downloading')
-                        ### download
-                        download_output = self.aws.get(row.path2file_aws.as_posix(), row.path2file_local.as_posix())
-                    ### process
-                    try:
-                        self._process_function(row)
-                    except:
-                        print(f'error applying function on one file {row.path2file_local.name}')
-                    ### remove raw file
-                    if not self.keep_files:
-                        row.path2file_local.unlink()
-        
-            # concatinate
-        
-            ds = _xr.open_mfdataset(p2flpgrp.path2file_tmp.iloc[1:])
-        
-            ### save final product
-            ds.to_netcdf(p2flp)
-        
-            # remove all tmp files
-            if not keep_tmp_files:
-                for dt, row in p2flpgrp.iterrows():
-                    try:
-                        row.path2file_tmp.unlink()
-                    except FileNotFoundError:
-                        pass
+        #     #### remove all tmp files
+        #     if not keep_tmp_files:
+        #         for dt, row in p2flpgrp.iterrows():
+        #             try:
+        #                 row.path2file_tmp.unlink()
+        #             except FileNotFoundError:
+        #                 pass
+        # except:
+        #     print('something went wrong with the concatenation. The file will not be removed')
         
