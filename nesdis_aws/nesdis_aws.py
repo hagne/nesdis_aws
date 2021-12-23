@@ -311,7 +311,8 @@ class AwsQuery(object):
         ## for each file in group
         
         for dt, row in self.workplan.iterrows():  
-            # if not row.path2file_local_processed.is_file():
+            if row.path2file_local_processed.is_file():
+                continue
             if not row.path2file_local.is_file():
     #             print('downloading')
                 #### download
