@@ -16,22 +16,64 @@ def readme():
     print(f'follow link for readme: {url}')
 
 
-def available_products():
+def get_available_products():
     aws = _s3fs.S3FileSystem(anon=True)
 
     df = _pd.DataFrame()
+    products = []
     for satellite in [16,17]:
         # satellite = 16#16 (east) or 17(west)
         base_folder = _pl.Path(f'noaa-goes{satellite}')
         products_available = aws.glob(base_folder.joinpath('*').as_posix())
-        df[satellite] = [p.split('/')[-1] for p in products_available if '.pdf' not in p]
+        # df[satellite] = 
+        products += [p.split('/')[-1] for p in products_available if '.pdf' not in p]
 
-    if _np.all(df[16] == df[17]):
-        ins = ''
-    else:
-        ins = ' !!_NOT_!!'
-    print(f'goes 16 and 17 products are{ins} identical')
-    return df
+    products = _np.unique(products)
+
+    products = _np.unique([p[:-1] for p in products])
+
+    products = [p for p in products if p[:3] =='ABI']
+
+    product_avail = _pd.DataFrame(columns = ['16-C', '16-F', '16-M', '17-C', '17-F', '17-M'], index = products)
+
+    def get_first_day(product, satellite, scan_sector):
+        prod = product
+        product_folder = _pl.Path(f'noaa-goes{satellite}/{prod}{scan_sector}')
+
+        years = aws.glob(product_folder.joinpath('*').as_posix())
+        if len(years) == 0:
+            return False
+
+        years.sort()
+
+        is2000 = True
+        while is2000:
+            yearfolder = years.pop(0)
+            firstyear = yearfolder.split('/')[-1]
+            # print(firstyear)
+            if firstyear != '2000':
+                is2000 = False
+
+        yearfolder = _pl.Path(yearfolder)
+        days = aws.glob(yearfolder.joinpath('*').as_posix())
+        days.sort()
+        firstday = int(days[0].split('/')[-1])
+        fd = _pd.to_datetime(firstyear) + _pd.to_timedelta(firstday, "D")
+        return fd
+
+    for prod, row in product_avail.iterrows():
+        # break
+
+        for idx,val in row.iteritems():
+            # break
+            satellite, scan_sector = idx.split('-')
+            fd = get_first_day(prod, satellite, scan_sector)
+            if fd:
+                product_avail.loc[prod, idx] = f'{fd.year:04d}-{fd.month:02d}-{fd.day:02d}'
+            else:
+                product_avail.loc[prod, idx] = '-'
+
+    return product_avail
 
 class AwsQuery(object):
     def __init__(self,
