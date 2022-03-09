@@ -7,6 +7,7 @@ import s3fs as _s3fs
 import psutil as _psutil
 import numpy as _np
 # import xarray as _xr
+import warnings
 
 def readme():
     url = 'https://docs.opendata.aws/noaa-goes16/cics-readme.html'
@@ -15,11 +16,40 @@ def readme():
     # print(out)
     print(f'follow link for readme: {url}')
 
+variable_info = {'ABI-L1b-Rad': 'Radiances',
+                 'ABI-L2-ACHA': 'Cloud Top Height',
+                 'ABI-L2-ACHT': 'Cloud Top Temperature',
+                 'ABI-L2-ACM': 'Clear Sky Mask',
+                 'ABI-L2-ACTP': 'Cloud Top Phase',
+                 'ABI-L2-ADP': 'Aerosol Detection',
+                 'ABI-L2-AICE': 'Ice Concentration and Extent',
+                 'ABI-L2-AITA': 'Ice Age and Thickness',
+                 'ABI-L2-AOD': 'Aerosol Optical Depth',
+                 'ABI-L2-BRF': 'Land Surface Bidirectional Reflectance Factor () 2 km resolution & DQFs',
+                 'ABI-L2-CMIP': 'Cloud and Moisture Imagery',
+                 'ABI-L2-COD': 'Cloud Optical Depth',
+                 'ABI-L2-CPS': 'Cloud Particle Size',
+                 'ABI-L2-CTP': 'Cloud Top Pressure',
+                 'ABI-L2-DMW': 'Derived Motion Winds',
+                 'ABI-L2-DMWV': 'L2+ Derived Motion Winds',
+                 'ABI-L2-DSI': 'Derived Stability Indices',
+                 'ABI-L2-DSR': 'Downward Shortwave Radiation',
+                 'ABI-L2-FDC': 'Fire (Hot Spot Characterization)',
+                 'ABI-L2-LSA': 'Land Surface Albedo () 2km resolution & DQFs',
+                 'ABI-L2-LST': 'Land Surface Temperature',
+                 'ABI-L2-LST2KM': 'Land Surface Temperature',
+                 'ABI-L2-LVMP': 'Legacy Vertical Moisture Profile',
+                 'ABI-L2-LVTP': 'Legacy Vertical Temperature Profile',
+                 'ABI-L2-MCMIP': 'Cloud and Moisture Imagery',
+                 'ABI-L2-RRQPE': 'Rainfall Rate (Quantitative Precipitation Estimate)',
+                 'ABI-L2-RSR': 'Reflected Shortwave Radiation Top-Of-Atmosphere',
+                 'ABI-L2-SST': 'Sea Surface (Skin) Temperature',
+                 'ABI-L2-TPW': 'Total Precipitable Water',
+                 'ABI-L2-VAA': 'Volcanic Ash: Detection and Height'}
 
 def get_available_products():
     aws = _s3fs.S3FileSystem(anon=True)
 
-    df = _pd.DataFrame()
     products = []
     for satellite in [16,17]:
         # satellite = 16#16 (east) or 17(west)
@@ -72,7 +102,9 @@ def get_available_products():
                 product_avail.loc[prod, idx] = f'{fd.year:04d}-{fd.month:02d}-{fd.day:02d}'
             else:
                 product_avail.loc[prod, idx] = '-'
-
+                
+    product_avail.insert(0,'longname', product_avail.apply(lambda row: variable_info[row.name], axis=1))
+    product_avail.index.name = 'product'
     return product_avail
 
 class AwsQuery(object):
@@ -85,6 +117,7 @@ class AwsQuery(object):
                  end = '2020-08-09 18:00:00',
                  process = None,
                  keep_files = None,
+                 verbose = False,
                  # check_if_file_exist = True,
                  # no_of_days = None,
                  # last_x_days = None, 
@@ -144,7 +177,10 @@ class AwsQuery(object):
             self._process_path2processed = _pl.Path(process['path2processed'])
             # self._process_path2processed_tmp = self._process_path2processed.joinpath('tmp')
             # self._process_path2processed_tmp.mkdir(exist_ok=True)
-            self.keep_files = False
+            if keep_files:
+                self.keep_files = True
+            else:
+                self.keep_files = False
             # self.check_if_file_exist = False
         else:
             self._process = False
@@ -153,6 +189,7 @@ class AwsQuery(object):
         self.aws.clear_instance_cache() # strange things happen if the is not the only query one is doing during a session
         # properties
         self._workplan = None
+        self._verbose = verbose
         
     @property
     def product(self):
@@ -161,7 +198,7 @@ class AwsQuery(object):
     @product.setter
     def product(self, value):
         if value[-1] == self.scan_sector:
-            value = value[:-1]
+            warnings.warn('last letter of product is equal to scan sector ... by mistake?')
         self._product = value
         return
         
@@ -238,7 +275,9 @@ class AwsQuery(object):
             files_available = []
             for idx,row in df.iterrows():
                 files_available += self.aws.glob(row.path.as_posix())
-
+            
+            self.tp_df = df
+            self.tp_filesav = files_available
             #### Make workplan
 
             workplan = _pd.DataFrame([_pl.Path(f) for f in files_available], columns=['path2file_aws'])
@@ -345,7 +384,7 @@ class AwsQuery(object):
         return out
     
     
-    def process(self):
+    def process(self, raise_exception = False):
     # deprecated first grouping is required
         # group = self.workplan.groupby('path2file_local_processed')
         # for p2flp, p2flpgrp in group:
@@ -364,7 +403,10 @@ class AwsQuery(object):
             try:
                 self._process_function(row)
             except:
-                print(f'error applying function on one file {row.path2file_local.name}. The raw fill will still be removed (unless keep_files is True) to avoid storage issues')
+                if raise_exception:
+                    raise
+                else:
+                    print(f'error applying function on one file {row.path2file_local.name}. The raw fill will still be removed (unless keep_files is True) to avoid storage issues')
             #### remove raw file
             if not self.keep_files:
                 row.path2file_local.unlink()
