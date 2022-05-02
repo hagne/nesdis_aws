@@ -469,6 +469,8 @@ class AwsQuery(object):
             pool.join()
         
         else:
+            
+            mp.set_start_method('spawn')
             idx, rows = zip(*list(self.workplan.iterrows()))
             for row_sub in zip(*[list(l) for l in _np.array_split(rows, no_of_cpu)]):
                 print('=', end = '', flush = True)
