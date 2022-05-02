@@ -8,6 +8,8 @@ import psutil as _psutil
 import numpy as _np
 # import xarray as _xr
 import warnings
+from functools import partial
+import multiprocessing as mp
 
 def readme():
     url = 'https://docs.opendata.aws/noaa-goes16/cics-readme.html'
@@ -107,6 +109,8 @@ def get_available_products():
     product_avail.index.name = 'product'
     return product_avail
 
+
+
 class AwsQuery(object):
     def __init__(self,
                  path2folder_local = '/mnt/telg/tmp/aws_tmp/',
@@ -184,9 +188,10 @@ class AwsQuery(object):
             # self.check_if_file_exist = False
         else:
             self._process = False
-            
-        self.aws = _s3fs.S3FileSystem(anon=True)
-        self.aws.clear_instance_cache() # strange things happen if the is not the only query one is doing during a session
+        
+        #### TODO memoryleak initiate aws only when its needed
+        self.aws = _s3fs.S3FileSystem(anon=True, skip_instance_cache=True)
+        # self.aws.clear_instance_cache() # strange things happen if the is not the only query one is doing during a session
         # properties
         self._workplan = None
         self._verbose = verbose
@@ -225,6 +230,8 @@ class AwsQuery(object):
         step_size = int(self.workplan.shape[0]/sample_size)
         if step_size < 1:
             step_size = 1
+        #### TODO memory leak: reload instance
+        # self.aws = _s3fs.S3FileSystem(anon=True, skip_instance_cache=True)
         sizes = self.workplan.iloc[::step_size].apply(lambda row: self.aws.disk_usage(row.path2file_aws), axis = 1)
         # sizes = self.workplan.iloc[::int(self.workplan.shape[0]/sample_size)].apply(lambda row: self.aws.disk_usage(row.path2file_aws), axis = 1)
         disk_space_needed = sizes.mean() * self.workplan.shape[0]
@@ -240,6 +247,8 @@ class AwsQuery(object):
     @property
     def workplan(self):
         if isinstance(self._workplan, type(None)):
+            if self._verbose:
+                print('Get workplan:')
 #             #### bug: problem below is that time ranges that span over multiple years will not work!
 #             # get the julian days (thus folders on aws) needed
 #             start_julian = int(_pd.to_datetime(self.start.date()).to_julian_date() - _pd.to_datetime(f'{self.start.year:04d}-01-01').to_julian_date()) + 1 
@@ -273,11 +282,12 @@ class AwsQuery(object):
             
             # get the path to each file in all the folders 
             files_available = []
+            
+            #### TODO memory leak: below reload aws instance            
+            # self.aws = _s3fs.S3FileSystem(anon=True, skip_instance_cache=True)
             for idx,row in df.iterrows():
                 files_available += self.aws.glob(row.path.as_posix())
-            
-            self.tp_df = df
-            self.tp_filesav = files_available
+
             #### Make workplan
 
             workplan = _pd.DataFrame([_pl.Path(f) for f in files_available], columns=['path2file_aws'])
@@ -313,6 +323,8 @@ class AwsQuery(object):
                 
             
             self._workplan = workplan
+            if self._verbose:
+                print('workplan done')
         return self._workplan       
     
     
@@ -377,31 +389,48 @@ class AwsQuery(object):
             if not overwrite:
                 if row.path2file_local.is_file():
                     continue
-                
+            #### TODO memory leak ... this did not help ... the following line is trying to deal with it. Its actaully not clear if the leak only happens when processing ... then the following line should not help
+            # self.aws.clear_instance_cache() 
+            # next try: reload aws instance: not helping
+            # self.aws = _s3fs.S3FileSystem(anon=True, skip_instance_cache=True)
             out = self.aws.get(row.path2file_aws.as_posix(), row.path2file_local.as_posix())
             if test:
                 break
         return out
     
     
-    def process(self, raise_exception = False):
+    def process(self, raise_exception = False, verbose = False):
     # deprecated first grouping is required
         # group = self.workplan.groupby('path2file_local_processed')
         # for p2flp, p2flpgrp in group:
         #     break
         ## for each file in group
-        
-        for dt, row in self.workplan.iterrows():  
+        if verbose:
+            print(f'start processing ({self.workplan.shape[0]}): ', end = '')
+        for dt, row in self.workplan.iterrows():
+            if verbose:
+                print('.', end = '')
             if row.path2file_local_processed.is_file():
                 continue
             if not row.path2file_local.is_file():
     #             print('downloading')
                 #### download
                 # download_output = 
+                
+                #### TODO memory leak ... i did not notice that the download is done separately here... maybe try out the cach purch only
+                # self.aws.clear_instance_cache()     #-> not helping           
+                # self.aws = _s3fs.S3FileSystem(anon=True, skip_instance_cache=True) - not helping
                 self.aws.get(row.path2file_aws.as_posix(), row.path2file_local.as_posix())
             #### process
             try:
+                #### TODO memory leak check if row is the same before and after
+                rowold = row.copy()
                 self._process_function(row)
+                if not row.equals(rowold):
+                    print('row changed ... return')
+                    return row, rowold
+                if verbose:
+                    print(':', end = '')
             except:
                 if raise_exception:
                     raise
@@ -410,7 +439,63 @@ class AwsQuery(object):
             #### remove raw file
             if not self.keep_files:
                 row.path2file_local.unlink()
+            if verbose:
+                print('|', end = '')
+        if verbose:
+            print('Done')      
+        return
     
+    #### TODO now since I am using multiprossing.Process instead of Pool we might want to separate the nesdis packages again.
+    def process_parallel(self, process_function = None, args = {}, no_of_cpu = 2, raise_exception = False, path2log= None, subprocess = '',server = '', comment = '', verbose = False):
+    # deprecated first grouping is required
+        # group = self.workplan.groupby('path2file_local_processed')
+        # for p2flp, p2flpgrp in group:
+        #     break
+        ## for each file in group
+        if verbose:
+            print(f'start processing ({self.workplan.shape[0]}): ', end = '')
+        # for dt, row in self.workplan.iterrows():
+        
+        if verbose:
+            print('Done')  
+        
+  
+        if 0:
+            # pool = mp.Pool(processes=no_of_cpu)
+            pool = mp.get_context('spawn').Pool(processes=no_of_cpu)
+            idx, rows = zip(*list(self.workplan.iterrows()))
+            pool.map(partial(process_function, **args), rows)
+            pool.close()
+            pool.join()
+        
+        else:
+            idx, rows = zip(*list(self.workplan.iterrows()))
+            for row_sub in zip(*[list(l) for l in _np.array_split(rows, no_of_cpu)]):
+                print('=', end = '', flush = True)
+                subproslist = []
+                
+                # print(f'row_sub: {row_sub}', flush = True)
+                for row in row_sub:
+                    rowt= rows[0].copy()
+                    rowt.iloc[:] = row
+                    row = rowt
+                    print(',',  end = '', flush = True)
+                    # print(f'row: {row}', flush = True)
+                    process = mp.Process(target=process_function, args = (row,), kwargs = args)
+                    process.start()
+                    subproslist.append(process)
+                [p.join() for p in subproslist]
+                
+                datetime = _pd.Timestamp.now()
+                run_status = 1
+                error = 0
+                success = no_of_cpu
+                warning = 0
+                with open(path2log, 'a') as log_out:
+                        log_out.write(f'{datetime},{run_status},{error},{success},{warning},{subprocess},{server},{comment}\n')
+                
+                # break
+        return
         #### todo: concatenate 
         # if this is actually desired I would think this should be done seperately, not as part of this package
         # try:
@@ -429,3 +514,47 @@ class AwsQuery(object):
         # except:
         #     print('something went wrong with the concatenation. The file will not be removed')
         
+def test(f1):
+    def f(x):
+        f1(x)
+        # f2(x)
+    return f 
+
+def process_row(row):#, process_function = None):
+    # if verbose:
+    #     print('.', end = '')
+    return row #lambda x: x
+
+    if row.path2file_local_processed.is_file():
+        return
+    if not row.path2file_local.is_file():
+#             print('downloading')
+        #### download
+        # download_output = 
+        
+        #### TODO memory leak ... i did not notice that the download is done separately here... maybe try out the cach purch only
+        # self.aws.clear_instance_cache()     #-> not helping           
+        aws = _s3fs.S3FileSystem(anon=True, skip_instance_cache=True) #- not helping
+        aws.get(row.path2file_aws.as_posix(), row.path2file_local.as_posix())
+        aws.close()
+    #### process
+    raise_exception = True
+    try:
+        #### TODO memory leak check if row is the same before and after
+        rowold = row.copy()
+        process_function(row)
+        if not row.equals(rowold):
+            print('row changed ... return')
+            return row, rowold
+        # if verbose:
+        #     print(':', end = '')
+    except:
+        if raise_exception:
+            raise
+        else:
+            print(f'error applying function on one file {row.path2file_local.name}. The raw fill will still be removed (unless keep_files is True) to avoid storage issues')
+    #### remove raw file
+    # if not self.keep_files:
+    row.path2file_local.unlink()
+    # if verbose:
+    #     print('|', end = '')

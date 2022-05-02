@@ -20,9 +20,8 @@ setup(
     license="MIT",
     keywords="nesdis_aws",
     url="https://github.com/hagne/nesdis_aws",
-    # scripts=['scripts/scrape_sat', 
-    #          # 'scripts/hrrr_smoke2gml'
-    #          ],
+    # scripts=['scripts/goes_aws_scaper_surfrad', 
+    #           ],
     # install_requires=['numpy','pandas'],
     # extras_require={'plotting': ['matplotlib'],
     #                 'testing': ['scipy']},
