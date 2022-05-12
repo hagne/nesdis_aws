@@ -493,8 +493,9 @@ class AwsQuery(object):
                 error = 0
                 success = no_of_cpu
                 warning = 0
-                with open(path2log, 'a') as log_out:
-                        log_out.write(f'{datetime},{run_status},{error},{success},{warning},{subprocess},{server},{comment}\n')
+                if not isinstance(path2log, type(None)):
+                    with open(path2log, 'a') as log_out:
+                            log_out.write(f'{datetime},{run_status},{error},{success},{warning},{subprocess},{server},{comment}\n')
                 
                 # break
         return
