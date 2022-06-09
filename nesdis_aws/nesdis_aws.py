@@ -446,7 +446,11 @@ class AwsQuery(object):
         return
     
     #### TODO now since I am using multiprossing.Process instead of Pool we might want to separate the nesdis packages again.
-    def process_parallel(self, process_function = None, args = {}, no_of_cpu = 2, raise_exception = False, path2log= None, subprocess = '',server = '', comment = '', verbose = False):
+    def process_parallel(self, process_function = None, args = {}, no_of_cpu = 2, 
+                         raise_exception = False, 
+                         path2log= None, 
+                         subprocess = '',server = '', comment = '', 
+                         verbose = True):
     # deprecated first grouping is required
         # group = self.workplan.groupby('path2file_local_processed')
         # for p2flp, p2flpgrp in group:
@@ -456,11 +460,11 @@ class AwsQuery(object):
             print(f'start processing ({self.workplan.shape[0]}): ', end = '')
         # for dt, row in self.workplan.iterrows():
         
-        if verbose:
-            print('Done')  
+  
         
   
         if 0:
+            #### TODO this if can be removed
             # pool = mp.Pool(processes=no_of_cpu)
             pool = mp.get_context('spawn').Pool(processes=no_of_cpu)
             idx, rows = zip(*list(self.workplan.iterrows()))
@@ -468,10 +472,18 @@ class AwsQuery(object):
             pool.close()
             pool.join()
         
-        else:
-            
+        elif 0:
+            #### TODO this elif can be removed
+            # the following lead to a truncation of the workplan. Only when mod(len(workplan), no_of_cpu) = 0 all rows would be considered
             mp.set_start_method('spawn')
             idx, rows = zip(*list(self.workplan.iterrows()))
+            print('====idx')
+            print(idx)
+            print('====rows')
+            print(rows)
+            print(f'no_of_cpu: {no_of_cpu} {type(no_of_cpu)}')
+            print(zip(*[list(l) for l in _np.array_split(rows, no_of_cpu)]))
+                  
             for row_sub in zip(*[list(l) for l in _np.array_split(rows, no_of_cpu)]):
                 print('=', end = '', flush = True)
                 subproslist = []
@@ -498,6 +510,43 @@ class AwsQuery(object):
                             log_out.write(f'{datetime},{run_status},{error},{success},{warning},{subprocess},{server},{comment}\n')
                 
                 # break
+            
+        
+        else:
+            if isinstance(mp.get_start_method(allow_none=True), type(None)):
+                mp.set_start_method('spawn')
+            else:
+                assert(mp.get_start_method() == 'spawn'), f'This should not be possible, we want to "spawn" new processes, not to "{mp.get_start_method()}" them.'
+
+            self.workplan['grp'] = range(self.workplan.shape[0])
+            self.workplan['grp'] +=1
+            #no_of_cpu = 3
+            self.workplan.grp /=no_of_cpu
+            self.workplan.grp = _np.ceil(self.workplan.grp)
+            
+            for idx, grp in self.workplan.groupby('grp'):
+                print('=', end = '', flush = True)
+                subproslist = []
+                
+                for grpidx, row in grp.iterrows():
+                    print(',',  end = '', flush = True)
+                    # print(f'row: {row}', flush = True)
+                    process = mp.Process(target=process_function, args = (row,), kwargs = args)
+                    process.start()
+                    subproslist.append(process)
+                [p.join() for p in subproslist]
+                
+                datetime = _pd.Timestamp.now()
+                run_status = 1
+                error = 0
+                success = no_of_cpu
+                warning = 0
+                if not isinstance(path2log, type(None)):
+                    with open(path2log, 'a') as log_out:
+                            log_out.write(f'{datetime},{run_status},{error},{success},{warning},{subprocess},{server},{comment}\n')
+                            
+        if verbose:
+            print('Done')
         return
         #### todo: concatenate 
         # if this is actually desired I would think this should be done seperately, not as part of this package
