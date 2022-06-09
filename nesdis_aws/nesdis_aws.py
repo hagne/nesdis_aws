@@ -312,15 +312,18 @@ class AwsQuery(object):
             #### truncate ... remember so far we did not consider times in start and end, only the entire days
             workplan = workplan.sort_index()
             workplan = workplan.truncate(self.start, self.end)
+            if workplan.shape[0] != 0:
+                #### processing additions
+                if self._process:
+                    ### add path to processed file names
+                    workplan["path2file_local_processed"] = workplan.apply(lambda row: self._process_path2processed.joinpath(f'{self._process_name_prefix}_{row.name.year}{row.name.month:02d}{row.name.day:02d}_{row.name.hour:02d}{row.name.minute:02d}{row.name.second:02d}.nc'), axis = 1)
+                    ### remove if file exists 
+                    workplan = workplan[~workplan.apply(lambda row: row.path2file_local_processed.is_file(), axis = True)]
+                    # workplan['path2file_tmp'] = workplan.apply(lambda row: self._process_path2processed_tmp.joinpath(row.name.__str__()), axis = 1)
             
-            #### processing additions
-            if self._process:
-                ### add path to processed file names
-                workplan["path2file_local_processed"] = workplan.apply(lambda row: self._process_path2processed.joinpath(f'{self._process_name_prefix}_{row.name.year}{row.name.month:02d}{row.name.day:02d}_{row.name.hour:02d}{row.name.minute:02d}{row.name.second:02d}.nc'), axis = 1)
-                ### remove if file exists 
-                workplan = workplan[~workplan.apply(lambda row: row.path2file_local_processed.is_file(), axis = True)]
-                # workplan['path2file_tmp'] = workplan.apply(lambda row: self._process_path2processed_tmp.joinpath(row.name.__str__()), axis = 1)
-                
+            else:
+                if self._verbose:
+                    print('workplan is empty')
             
             self._workplan = workplan
             if self._verbose:
@@ -476,6 +479,10 @@ class AwsQuery(object):
             #### TODO this elif can be removed
             # the following lead to a truncation of the workplan. Only when mod(len(workplan), no_of_cpu) = 0 all rows would be considered
             mp.set_start_method('spawn')
+            if self.workplan.shape[0] == 0:
+                if verbose:
+                    print('workplan is empty, nothing to do here')
+                return
             idx, rows = zip(*list(self.workplan.iterrows()))
             print('====idx')
             print(idx)
