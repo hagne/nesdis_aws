@@ -49,23 +49,103 @@ variable_info = {'ABI-L1b-Rad': 'Radiances',
                  'ABI-L2-TPW': 'Total Precipitable Water',
                  'ABI-L2-VAA': 'Volcanic Ash: Detection and Height'}
 
-def get_available_products():
+     
+
+def get_available_JPSS_products(sensor = 'VIIRS'):
+    """
+    In deveolpment. There is not much on the AWS anyway ... got to go back to CLAss ... boooooo
+
+    Parameters
+    ----------
+    sensor : TYPE, optional
+        DESCRIPTION. The default is 'VIIRS'.
+
+    Returns
+    -------
+    TYPE
+        DESCRIPTION.
+
+    """
+    assert(sensor == 'VIIRS'), 'only VIIRS available at this point'
+    satellites = ['NOAA20', 'SNPP']
+    aws = _s3fs.S3FileSystem(anon=True)
+    jpss_base_folder = _pl.Path('noaa-jpss')
+    products = []
+    # for satellite in [16,17]:
+    for satellite in satellites:
+        # satellite = 16#16 (east) or 17(west)
+        base_folder = jpss_base_folder.joinpath(satellite)
+        products_available = aws.glob(base_folder.joinpath('VIIRS').joinpath('*').as_posix())
+        # df[satellite] = 
+        products += [p.split('/')[-1].replace(f'{satellite}_', '') for p in products_available if '.pdf' not in p]
+    products = _np.unique(products)
+    # return products
+    # products = _np.unique([p[:-1] for p in products])
+    # products = [p for p in products if p[:3] =='ABI']
+    product_avail = _pd.DataFrame(columns = satellites, index = products)
+
+    def get_first_day(product, satellite):
+        prod = f'{satellite}_{product}'
+        # product_folder = _pl.Path(f'{jpss_base_folder}/{sensor}/{prod}')
+        product_folder = _pl.Path(f'{jpss_base_folder}/{satellite}/{sensor}/{prod}')
+        # print(f'product_folder: {product_folder}')
+        years = aws.glob(product_folder.joinpath('*').as_posix())
+        # print(f'years: {years}')
+        if len(years) == 0:
+            return False
+
+        years.sort()
+        yearfolder = years[0]
+        firstyear = yearfolder.split('/')[-1]
+        # is2000 = True
+        # while is2000:
+        #     yearfolder = years.pop(0)
+        #     firstyear = yearfolder.split('/')[-1]
+        #     # print(firstyear)
+        #     if firstyear != '2000':
+        #         is2000 = False
+
+        yearfolder = _pl.Path(yearfolder)
+        days = aws.glob(yearfolder.joinpath('*').as_posix())
+        days.sort()
+        firstday = int(days[0].split('/')[-1])
+        fd = _pd.to_datetime(firstyear) + _pd.to_timedelta(firstday, "D")
+        return fd
+
+    for prod, row in product_avail.iterrows():
+        # break
+
+        for idx,val in row.iteritems():
+            # break
+            # satellite, scan_sector = idx.split('-')
+            satellite = idx
+            fd = get_first_day(prod, satellite)
+            if fd:
+                product_avail.loc[prod, idx] = f'{fd.year:04d}-{fd.month:02d}-{fd.day:02d}'
+            else:
+                product_avail.loc[prod, idx] = '-'
+                
+    # product_avail.insert(0,'longname', product_avail.apply(lambda row: variable_info[row.name], axis=1))
+    product_avail.index.name = 'product'
+    return product_avail
+
+def get_available_GOES_products(sensor = 'ABI'):
+    assert(sensor == 'ABI'), 'Only ABI sensors at this time'
+    satellites = ['noaa-goes16', 'noaa-goes17']
     aws = _s3fs.S3FileSystem(anon=True)
 
     products = []
-    for satellite in [16,17]:
+    # for satellite in [16,17]:
+    for satellite in satellites:
         # satellite = 16#16 (east) or 17(west)
-        base_folder = _pl.Path(f'noaa-goes{satellite}')
+        base_folder = _pl.Path(satellite)
         products_available = aws.glob(base_folder.joinpath('*').as_posix())
         # df[satellite] = 
         products += [p.split('/')[-1] for p in products_available if '.pdf' not in p]
-
+        
     products = _np.unique(products)
-
     products = _np.unique([p[:-1] for p in products])
-
     products = [p for p in products if p[:3] =='ABI']
-
     product_avail = _pd.DataFrame(columns = ['16-C', '16-F', '16-M', '17-C', '17-F', '17-M'], index = products)
 
     def get_first_day(product, satellite, scan_sector):
@@ -78,6 +158,7 @@ def get_available_products():
 
         years.sort()
 
+        # there is this strange folder from 2000, no Idea what that is about?!?
         is2000 = True
         while is2000:
             yearfolder = years.pop(0)
@@ -109,7 +190,7 @@ def get_available_products():
     product_avail.index.name = 'product'
     return product_avail
 
-
+get_available_products = get_available_GOES_products
 
 class AwsQuery(object):
     def __init__(self,
